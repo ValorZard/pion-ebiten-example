@@ -15,12 +15,14 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"image"
 	"io"
 	"log"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/ebitengine/debugui"
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/pion/webrtc/v4"
@@ -48,7 +50,10 @@ func init() {
 	}
 }
 
-type Game struct{}
+type Game struct {
+	debugui debugui.DebugUI
+	count   int
+}
 
 func (g *Game) Update() error {
 	// Update player position based on input
@@ -65,6 +70,18 @@ func (g *Game) Update() error {
 		player_x += PlayerSpeed
 	}
 
+	// ui stuff
+	if _, err := g.debugui.Update(func(ctx *debugui.Context) error {
+		ctx.Window("Test", image.Rect(60, 60, 160, 120), func(layout debugui.ContainerLayout) {
+			ctx.Button("Button").On(func() {
+				g.count++
+			})
+		})
+		return nil
+	}); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -77,10 +94,14 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	op = &ebiten.DrawImageOptions{}
 	op.GeoM.Translate(remote_player_x, remote_player_y)
 	screen.DrawImage(img, op)
+
+	// render debug UI
+	g.debugui.Draw(screen)
+	ebitenutil.DebugPrint(screen, fmt.Sprintf("Count: %d", g.count))
 }
 
 func (g *Game) Layout(outsideWidth, outsideHeight int) (screenWidth, screenHeight int) {
-	return 640, 480
+	return outsideWidth, outsideHeight
 }
 
 func main() {
