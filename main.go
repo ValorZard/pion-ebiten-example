@@ -15,15 +15,42 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/pion/randutil"
 	"github.com/pion/webrtc/v4"
 )
 
 const messageSize = 15
+
+var img *ebiten.Image
+
+func init() {
+	var err error
+	img, _, err = ebitenutil.NewImageFromFile("gopher.png")
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+type Game struct{}
+
+func (g *Game) Update() error {
+	return nil
+}
+
+func (g *Game) Draw(screen *ebiten.Image) {
+	screen.DrawImage(img, nil)
+}
+
+func (g *Game) Layout(outsideWidth, outsideHeight int) (screenWidth, screenHeight int) {
+	return 640, 480
+}
 
 func main() {
 	// parse flag to see if we are host or client
@@ -202,7 +229,11 @@ func main() {
 		fmt.Println(encode(peerConnection.LocalDescription()))
 	}
 
-	select {}
+	ebiten.SetWindowSize(640, 480)
+	ebiten.SetWindowTitle("Render an image")
+	if err := ebiten.RunGame(&Game{}); err != nil {
+		log.Fatal(err)
+	}
 }
 
 // ReadLoop shows how to read from the datachannel directly.
