@@ -10,6 +10,7 @@ package main
 import (
 	"bufio"
 	"encoding/base64"
+	"encoding/gob"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -22,15 +23,20 @@ import (
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
-	"github.com/pion/randutil"
 	"github.com/pion/webrtc/v4"
 )
 
-const messageSize = 15
+type NetworkMessage struct {
+	X float64
+	Y float64
+}
 
 var img *ebiten.Image
 var player_x float64 = 0
 var player_y float64 = 0
+
+var remote_player_x float64 = 0
+var remote_player_y float64 = 0
 
 const PlayerSpeed = 2
 
@@ -63,8 +69,13 @@ func (g *Game) Update() error {
 }
 
 func (g *Game) Draw(screen *ebiten.Image) {
+	// local player
 	op := &ebiten.DrawImageOptions{}
 	op.GeoM.Translate(player_x, player_y)
+	screen.DrawImage(img, op)
+	// remote player
+	op = &ebiten.DrawImageOptions{}
+	op.GeoM.Translate(remote_player_x, remote_player_y)
 	screen.DrawImage(img, op)
 }
 
@@ -258,33 +269,34 @@ func main() {
 
 // ReadLoop shows how to read from the datachannel directly.
 func ReadLoop(d io.Reader) {
+	dec := gob.NewDecoder(d)
 	for {
-		buffer := make([]byte, messageSize)
-		n, err := d.Read(buffer)
-		if err != nil {
+		var message NetworkMessage
+		if err := dec.Decode(&message); err != nil {
 			fmt.Println("Datachannel closed; Exit the readloop:", err)
 
 			return
 		}
 
-		fmt.Printf("Message from DataChannel: %s\n", string(buffer[:n]))
+		//fmt.Printf("Message from DataChannel: %#v\n", message)
+		remote_player_x = message.X
+		remote_player_y = message.Y
 	}
 }
 
 // WriteLoop shows how to write to the datachannel directly.
 func WriteLoop(d io.Writer) {
-	ticker := time.NewTicker(5 * time.Second)
+	enc := gob.NewEncoder(d)
+	ticker := time.NewTicker(16 * time.Millisecond) // roughly 60 FPS
 	defer ticker.Stop()
 	for range ticker.C {
-		message, err := randutil.GenerateCryptoRandomString(
-			messageSize, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
-		)
-		if err != nil {
-			panic(err)
+		message := NetworkMessage{
+			X: player_x,
+			Y: player_y,
 		}
-
-		fmt.Printf("Sending %s \n", message)
-		if _, err := d.Write([]byte(message)); err != nil {
+		//fmt.Printf("Sending %#v \n", message)
+		if err := enc.Encode(message); err != nil {
+			fmt.Println("Datachannel closed; Exit the writeloop:", err)
 			panic(err)
 		}
 	}
