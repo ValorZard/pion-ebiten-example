@@ -29,6 +29,10 @@ import (
 const messageSize = 15
 
 var img *ebiten.Image
+var player_x float64 = 0
+var player_y float64 = 0
+
+const PlayerSpeed = 2
 
 func init() {
 	var err error
@@ -41,11 +45,27 @@ func init() {
 type Game struct{}
 
 func (g *Game) Update() error {
+	// Update player position based on input
+	if ebiten.IsKeyPressed(ebiten.KeyArrowUp) {
+		player_y -= PlayerSpeed
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyArrowDown) {
+		player_y += PlayerSpeed
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyArrowLeft) {
+		player_x -= PlayerSpeed
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyArrowRight) {
+		player_x += PlayerSpeed
+	}
+
 	return nil
 }
 
 func (g *Game) Draw(screen *ebiten.Image) {
-	screen.DrawImage(img, nil)
+	op := &ebiten.DrawImageOptions{}
+	op.GeoM.Translate(player_x, player_y)
+	screen.DrawImage(img, op)
 }
 
 func (g *Game) Layout(outsideWidth, outsideHeight int) (screenWidth, screenHeight int) {
