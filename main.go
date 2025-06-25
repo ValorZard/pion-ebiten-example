@@ -92,9 +92,13 @@ func main() {
 		}
 	})
 
-	// Register data channel creation handling
-	peerConnection.OnDataChannel(func(dataChannel *webrtc.DataChannel) {
-		fmt.Printf("New DataChannel %s %d\n", dataChannel.Label(), dataChannel.ID())
+	if *hostPtr {
+		// Create a data channel with the default label and options
+		dataChannel, err := peerConnection.CreateDataChannel("data", nil)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("Created DataChannel %s %d\n", dataChannel.Label(), dataChannel.ID())
 
 		// Register channel opening handling
 		dataChannel.OnOpen(func() {
@@ -112,42 +116,92 @@ func main() {
 			// Handle writing to the data channel
 			go WriteLoop(raw)
 		})
-	})
 
-	// Wait for the offer to be pasted
-	offer := webrtc.SessionDescription{}
-	decode(readUntilNewline(), &offer)
+		offer, err := peerConnection.CreateOffer(nil)
+		if err != nil {
+			panic(err)
+		}
 
-	// Set the remote SessionDescription
-	err = peerConnection.SetRemoteDescription(offer)
-	if err != nil {
-		panic(err)
+		err = peerConnection.SetLocalDescription(offer)
+		if err != nil {
+			panic(err)
+		}
+
+		// Output the answer in base64 so we can paste it in browser
+		fmt.Println("Printing SDP Offer, give this to the client:")
+		fmt.Println(encode(&offer))
+
+		// Wait for the answer to be pasted
+		fmt.Println("Waiting for answer from client:")
+		answer := webrtc.SessionDescription{}
+		decode(readUntilNewline(), &answer)
+
+		// Set the remote SessionDescription
+		err = peerConnection.SetRemoteDescription(answer)
+		if err != nil {
+			panic(err)
+		}
+
+		fmt.Println("Remote description set, client should now be able to connect")
+	} else {
+		// callback for when we receive a new data channel
+		// Register data channel creation handling
+		peerConnection.OnDataChannel(func(dataChannel *webrtc.DataChannel) {
+			fmt.Printf("New DataChannel %s %d\n", dataChannel.Label(), dataChannel.ID())
+
+			// Register channel opening handling
+			dataChannel.OnOpen(func() {
+				fmt.Printf("Data channel '%s'-'%d' open.\n", dataChannel.Label(), dataChannel.ID())
+
+				// Detach the data channel
+				raw, dErr := dataChannel.Detach()
+				if dErr != nil {
+					panic(dErr)
+				}
+
+				// Handle reading from the data channel
+				go ReadLoop(raw)
+
+				// Handle writing to the data channel
+				go WriteLoop(raw)
+			})
+		})
+		fmt.Println("Waiting for SDP Offer from host:")
+		// Wait for the offer to be pasted
+		offer := webrtc.SessionDescription{}
+		decode(readUntilNewline(), &offer)
+
+		// Set the remote SessionDescription
+		err = peerConnection.SetRemoteDescription(offer)
+		if err != nil {
+			panic(err)
+		}
+
+		// Create answer
+		answer, err := peerConnection.CreateAnswer(nil)
+		if err != nil {
+			panic(err)
+		}
+
+		// Create channel that is blocked until ICE Gathering is complete
+		gatherComplete := webrtc.GatheringCompletePromise(peerConnection)
+
+		// Sets the LocalDescription, and starts our UDP listeners
+		err = peerConnection.SetLocalDescription(answer)
+		if err != nil {
+			panic(err)
+		}
+
+		// Block until ICE Gathering is complete, disabling trickle ICE
+		// we do this because we only can exchange one signaling message
+		// in a production application you should exchange ICE Candidates via OnICECandidate
+		<-gatherComplete
+
+		// Output the answer in base64 so we can paste it in browser
+		fmt.Println("Printing SDP Answer, give this to the host:")
+		fmt.Println(encode(peerConnection.LocalDescription()))
 	}
 
-	// Create answer
-	answer, err := peerConnection.CreateAnswer(nil)
-	if err != nil {
-		panic(err)
-	}
-
-	// Create channel that is blocked until ICE Gathering is complete
-	gatherComplete := webrtc.GatheringCompletePromise(peerConnection)
-
-	// Sets the LocalDescription, and starts our UDP listeners
-	err = peerConnection.SetLocalDescription(answer)
-	if err != nil {
-		panic(err)
-	}
-
-	// Block until ICE Gathering is complete, disabling trickle ICE
-	// we do this because we only can exchange one signaling message
-	// in a production application you should exchange ICE Candidates via OnICECandidate
-	<-gatherComplete
-
-	// Output the answer in base64 so we can paste it in browser
-	fmt.Println(encode(peerConnection.LocalDescription()))
-
-	// Block forever
 	select {}
 }
 
