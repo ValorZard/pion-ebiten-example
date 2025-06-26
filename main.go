@@ -13,7 +13,6 @@ import (
 	"encoding/gob"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"image"
 	"io"
@@ -42,6 +41,9 @@ var remote_player_y float64 = 0
 
 const PlayerSpeed = 2
 
+var isClient bool = false
+var isHost bool = false
+
 func init() {
 	var err error
 	img, _, err = ebitenutil.NewImageFromFile("gopher.png")
@@ -51,8 +53,8 @@ func init() {
 }
 
 type Game struct {
-	debugui debugui.DebugUI
-	count   int
+	debugui        debugui.DebugUI
+	peerConnection *webrtc.PeerConnection
 }
 
 func (g *Game) Update() error {
@@ -72,9 +74,18 @@ func (g *Game) Update() error {
 
 	// ui stuff
 	if _, err := g.debugui.Update(func(ctx *debugui.Context) error {
-		ctx.Window("Test", image.Rect(60, 60, 160, 120), func(layout debugui.ContainerLayout) {
-			ctx.Button("Button").On(func() {
-				g.count++
+		ctx.Window("Test", image.Rect(60, 60, 160, 180), func(layout debugui.ContainerLayout) {
+			ctx.Button("Host Button").On(func() {
+				if !isHost {
+					g.runHost()
+					isHost = true
+				}
+			})
+			ctx.Button("Client Button").On(func() {
+				if !isClient {
+					g.runClient()
+					isClient = true
+				}
 			})
 		})
 		return nil
@@ -97,26 +108,13 @@ func (g *Game) Draw(screen *ebiten.Image) {
 
 	// render debug UI
 	g.debugui.Draw(screen)
-	ebitenutil.DebugPrint(screen, fmt.Sprintf("Count: %d", g.count))
 }
 
 func (g *Game) Layout(outsideWidth, outsideHeight int) (screenWidth, screenHeight int) {
 	return outsideWidth, outsideHeight
 }
 
-func main() {
-	// parse flag to see if we are host or client
-	// to run as host, use `go run main.go -host`
-	hostPtr := flag.Bool("host", false, "Run as host (default is client)")
-
-	flag.Parse()
-
-	if *hostPtr {
-		fmt.Println("Running as host, waiting for client to connect")
-	} else {
-		fmt.Println("Running as client, waiting for host to connect")
-	}
-
+func (g *Game) networkSetup() {
 	// Since this behavior diverges from the WebRTC API it has to be
 	// enabled using a settings engine. Mixing both detached and the
 	// OnMessage DataChannel API is not supported.
@@ -144,15 +142,19 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	defer func() {
-		if cErr := peerConnection.Close(); cErr != nil {
-			fmt.Printf("cannot close peerConnection: %v\n", cErr)
-		}
-	}()
+	/*
+		defer func() {
+			if cErr := peerConnection.Close(); cErr != nil {
+				fmt.Printf("cannot close peerConnection: %v\n", cErr)
+			}
+		}()
+	*/
+
+	g.peerConnection = peerConnection
 
 	// Set the handler for Peer connection state
 	// This will notify you when the peer has connected/disconnected
-	peerConnection.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+	g.peerConnection.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		fmt.Printf("Peer Connection State has changed: %s\n", state.String())
 
 		if state == webrtc.PeerConnectionStateFailed {
@@ -170,14 +172,68 @@ func main() {
 			os.Exit(0)
 		}
 	})
+}
 
-	if *hostPtr {
-		// Create a data channel with the default label and options
-		dataChannel, err := peerConnection.CreateDataChannel("data", nil)
-		if err != nil {
-			panic(err)
+func (g *Game) runClient() {
+	g.networkSetup()
+	// Create a data channel with the default label and options
+	dataChannel, err := g.peerConnection.CreateDataChannel("data", nil)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("Created DataChannel %s %d\n", dataChannel.Label(), dataChannel.ID())
+
+	// Register channel opening handling
+	dataChannel.OnOpen(func() {
+		fmt.Printf("Data channel '%s'-'%d' open.\n", dataChannel.Label(), dataChannel.ID())
+
+		// Detach the data channel
+		raw, dErr := dataChannel.Detach()
+		if dErr != nil {
+			panic(dErr)
 		}
-		fmt.Printf("Created DataChannel %s %d\n", dataChannel.Label(), dataChannel.ID())
+
+		// Handle reading from the data channel
+		go ReadLoop(raw)
+
+		// Handle writing to the data channel
+		go WriteLoop(raw)
+	})
+
+	offer, err := g.peerConnection.CreateOffer(nil)
+	if err != nil {
+		panic(err)
+	}
+
+	err = g.peerConnection.SetLocalDescription(offer)
+	if err != nil {
+		panic(err)
+	}
+
+	// Output the answer in base64 so we can paste it in browser
+	fmt.Println("Printing SDP Offer, give this to the client:")
+	fmt.Println(encode(&offer))
+
+	// Wait for the answer to be pasted
+	fmt.Println("Waiting for answer from client:")
+	answer := webrtc.SessionDescription{}
+	decode(readUntilNewline(), &answer)
+
+	// Set the remote SessionDescription
+	err = g.peerConnection.SetRemoteDescription(answer)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println("Remote description set, client should now be able to connect")
+}
+
+func (g *Game) runHost() {
+	g.networkSetup()
+	// callback for when we receive a new data channel
+	// Register data channel creation handling
+	g.peerConnection.OnDataChannel(func(dataChannel *webrtc.DataChannel) {
+		fmt.Printf("New DataChannel %s %d\n", dataChannel.Label(), dataChannel.ID())
 
 		// Register channel opening handling
 		dataChannel.OnOpen(func() {
@@ -195,92 +251,44 @@ func main() {
 			// Handle writing to the data channel
 			go WriteLoop(raw)
 		})
+	})
+	fmt.Println("Waiting for SDP Offer from host:")
+	// Wait for the offer to be pasted
+	offer := webrtc.SessionDescription{}
+	decode(readUntilNewline(), &offer)
 
-		offer, err := peerConnection.CreateOffer(nil)
-		if err != nil {
-			panic(err)
-		}
-
-		err = peerConnection.SetLocalDescription(offer)
-		if err != nil {
-			panic(err)
-		}
-
-		// Output the answer in base64 so we can paste it in browser
-		fmt.Println("Printing SDP Offer, give this to the client:")
-		fmt.Println(encode(&offer))
-
-		// Wait for the answer to be pasted
-		fmt.Println("Waiting for answer from client:")
-		answer := webrtc.SessionDescription{}
-		decode(readUntilNewline(), &answer)
-
-		// Set the remote SessionDescription
-		err = peerConnection.SetRemoteDescription(answer)
-		if err != nil {
-			panic(err)
-		}
-
-		fmt.Println("Remote description set, client should now be able to connect")
-	} else {
-		// callback for when we receive a new data channel
-		// Register data channel creation handling
-		peerConnection.OnDataChannel(func(dataChannel *webrtc.DataChannel) {
-			fmt.Printf("New DataChannel %s %d\n", dataChannel.Label(), dataChannel.ID())
-
-			// Register channel opening handling
-			dataChannel.OnOpen(func() {
-				fmt.Printf("Data channel '%s'-'%d' open.\n", dataChannel.Label(), dataChannel.ID())
-
-				// Detach the data channel
-				raw, dErr := dataChannel.Detach()
-				if dErr != nil {
-					panic(dErr)
-				}
-
-				// Handle reading from the data channel
-				go ReadLoop(raw)
-
-				// Handle writing to the data channel
-				go WriteLoop(raw)
-			})
-		})
-		fmt.Println("Waiting for SDP Offer from host:")
-		// Wait for the offer to be pasted
-		offer := webrtc.SessionDescription{}
-		decode(readUntilNewline(), &offer)
-
-		// Set the remote SessionDescription
-		err = peerConnection.SetRemoteDescription(offer)
-		if err != nil {
-			panic(err)
-		}
-
-		// Create answer
-		answer, err := peerConnection.CreateAnswer(nil)
-		if err != nil {
-			panic(err)
-		}
-
-		// Create channel that is blocked until ICE Gathering is complete
-		gatherComplete := webrtc.GatheringCompletePromise(peerConnection)
-
-		// Sets the LocalDescription, and starts our UDP listeners
-		err = peerConnection.SetLocalDescription(answer)
-		if err != nil {
-			panic(err)
-		}
-
-		// Block until ICE Gathering is complete, disabling trickle ICE
-		// we do this because we only can exchange one signaling message
-		// in a production application you should exchange ICE Candidates via OnICECandidate
-		<-gatherComplete
-
-		// Output the answer in base64 so we can paste it in browser
-		fmt.Println("Printing SDP Answer, give this to the host:")
-		fmt.Println(encode(peerConnection.LocalDescription()))
+	// Set the remote SessionDescription
+	err := g.peerConnection.SetRemoteDescription(offer)
+	if err != nil {
+		panic(err)
 	}
 
+	// Create answer
+	answer, err := g.peerConnection.CreateAnswer(nil)
+	if err != nil {
+		panic(err)
+	}
+
+	// Create channel that is blocked until ICE Gathering is complete
+	gatherComplete := webrtc.GatheringCompletePromise(g.peerConnection)
+
+	// Sets the LocalDescription, and starts our UDP listeners
+	err = g.peerConnection.SetLocalDescription(answer)
+	if err != nil {
+		panic(err)
+	}
+
+	// Block until ICE Gathering is complete, disabling trickle ICE
+	// we do this because we only can exchange one signaling message
+	// in a production application you should exchange ICE Candidates via OnICECandidate
+	<-gatherComplete
+
+	// Output the answer in base64 so we can paste it in browser
+	fmt.Println("Printing SDP Answer, give this to the host:")
+	fmt.Println(encode(g.peerConnection.CurrentLocalDescription()))
+}
+
+func main() {
 	ebiten.SetWindowSize(640, 480)
 	ebiten.SetWindowTitle("Render an image")
 	if err := ebiten.RunGame(&Game{}); err != nil {
